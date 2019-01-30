@@ -32,7 +32,7 @@ class dynamics(object):
         super(dynamics, self).__init__()
         self.solver = ode(self.system).set_integrator('vode', method='bdf')
         self.solver.set_initial_value(x0, t0)
-        self.solver.set_f_params((dvdt, dwdt))
+        self.solver.set_f_params(dvdt, dwdt)
         self.dt = dt
 
     def get_X(self):
@@ -48,51 +48,62 @@ class dynamics(object):
 
     def system(self, dvdt, dwdt):
         """Calculate dX/dt."""
-        if dvdt.shape[0] != 3 | dvdt.shape[1] != 1:
+        if dvdt.shape[0] != 3:
             raise ValueError(
                 "Derivative of the velocity should be a 3 * 1 vector."
             )
-        if dwdt.shape[0] != 3 | dwdt.shape[1] != 1:
+        if dwdt.shape[0] != 3:
             raise ValueError(
                 "Derivative of the rotation should be a 3 * 1 vector."
             )
 
         dxdt = np.zeros((13, 1))
-        dxdt[0:3, 0] = self.velocity
+        dxdt[0:3, 0] = self.solver.y[3:6, 0].T
         dxdt[3:6, 0] = dvdt
         dxdt[10:13, 0] = dwdt
 
-        w = self.solver.y[10:13, 0].T
-        dxdt[6:10, 0] = np.dot(
-            np.array([
-                [0, -w[0], -w[1], -w[2]],
-                [w[0], 0, -w[1], -w[2]],
-                [w[1], w[2], 0, -w[0]],
-                [w[2], -w[1], w[0], 0]
-            ]),
-            self.attitude
-        )
+        w = self.solver.y[10:13, 0]
+        q = self.solver.y[6:10, 0]
+        w_hat = 0.5 * np.array([
+            [0,    -w[0], -w[1], -w[2]],
+            [w[0],     0, -w[2],  w[1]],
+            [w[1],  w[2],     0, -w[0]],
+            [w[2], -w[1],  w[0],     0]
+        ])
+        dxdt[6:10, 0] = np.dot(w_hat, q)
         return dxdt
+
+    def DCM(self):
+        """Obtain direction cosine matrix which rotates position vector."""
+        q = self.solver.y[6:10, 0]
+
+        A11 = q[0]**2+q[1]**2-q[2]**2-q[3]**2
+        A12 = 2*(q[1]*q[2]-q[0]*q[3])
+        A13 = 2*(q[1]*q[3]+q[0]*q[2])
+
+        A21 = 2*(q[1]*q[2]+q[0]*q[3])
+        A22 = q[0]**2-q[1]**2+q[2]**2-q[3]**2
+        A23 = 2*(q[2]*q[3]-q[0]*q[1])
+
+        A31 = 2*(q[1]*q[3]-q[0]*q[2])
+        A32 = 2*(q[2]*q[3]+q[0]*q[1])
+        A33 = q[0]**2-q[1]**2-q[2]**2+q[3]**2
+
+        A = np.array([
+            [A11, A12, A13],
+            [A21, A22, A23],
+            [A31, A32, A33]
+        ])
+        return A
+
+    def normalize_quartanion(self):
+        norm = np.linalg.norm(self.solver.y[6:10, 0])
+        self.solver.y[6:10, 0] /= norm
 
     def simulate_onestep(self, dvdt, dwdt):
         """Proceed one step with params."""
-        self.set_f_params(dvdt, dwdt)
+        self.solver.set_f_params(dvdt, dwdt)
         self.solver.integrate(self.solver.t + self.dt)
+        self.normalize_quartanion()
+        print(self.solver.y.T)
         return self.solver.y, self.solver.t
-
-    def DCM(self):
-        """Obtain direction cosine matrix A which rotates position vector."""
-        q0 = self.solver.y[6, 0]
-        q1 = self.solver.y[7, 0]
-        q2 = self.solver.y[8, 0]
-        q3 = self.solver.y[9, 0]
-        q02 = q0 ** 2
-        q12 = q1 ** 2
-        q22 = q2 ** 2
-        q32 = q3 ** 2
-        A = np.array([
-            [q02 + q12 - q22 - q32, 2*(q1*q2 - q0*q3), 2*(q1*q3 + q0*q2)],
-            [2*(q1*q2 + q0*q3), q02 - q12 + q22 - q32, 2*(q2*q3 - q0*q1)],
-            [2*(q1*q3 - q0*q2), 2*(q2*q3 + q0*q1), q02 - q12 - q22 + q32]
-        ])
-        return A
